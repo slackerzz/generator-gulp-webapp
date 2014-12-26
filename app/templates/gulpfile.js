@@ -1,4 +1,4 @@
-/* jshint node:true */
+/*global -$ */
 'use strict';
 // generated on <%= (new Date).toISOString().split('T')[0] %> using <%= pkg.name %> <%= pkg.version %>
 var gulp = require('gulp');
@@ -6,13 +6,16 @@ var $ = require('gulp-load-plugins')();
 
 gulp.task('styles', function () {<% if (includeSass) { %>
   return gulp.src('app/styles/main.scss')
-    .pipe($.plumber())
-    .pipe($.rubySass({
-      style: 'expanded',
-      precision: 10
+    .pipe($.sass({
+      outputStyle: 'nested', // libsass doesn't support expanded yet
+      precision: 10,
+      includePaths: ['.'],
+      onError: console.error.bind(console, 'Sass error:')
     }))<% } else { %>
   return gulp.src('app/styles/main.css')<% } %>
-    .pipe($.autoprefixer({browsers: ['last 1 version']}))
+    .pipe($.postcss([
+      require('autoprefixer-core')({browsers: ['last 1 version']})
+    ]))
     .pipe(gulp.dest('.tmp/styles'));
 });
 
@@ -23,20 +26,16 @@ gulp.task('jshint', function () {
     .pipe($.jshint.reporter('fail'));
 });
 
-gulp.task('html', ['styles'], function () {<% if (includeBootstrap && includeSass) { %>
-  var lazypipe = require('lazypipe');
-  var cssChannel = lazypipe()
-    .pipe($.csso)
-    .pipe($.replace, 'bower_components/bootstrap-sass-official/assets/fonts/bootstrap','fonts');<% } %>
-  var assets = $.useref.assets({searchPath: '{.tmp,app}'});
+gulp.task('html', ['styles'], function () {
+  var assets = $.useref.assets({searchPath: ['.tmp', 'app', '.']});
 
   return gulp.src('app/*.html')
     .pipe(assets)
-    .pipe($.if('*.js', $.uglify()))<% if (includeBootstrap && includeSass) { %>
-    .pipe($.if('*.css', cssChannel()))<% } else { %>
-    .pipe($.if('*.css', $.csso()))<% } %>
+    .pipe($.if('*.js', $.uglify()))
+    .pipe($.if('*.css', $.csso()))
     .pipe(assets.restore())
     .pipe($.useref())
+    .pipe($.if('*.html', $.minifyHtml({conditionals: true, loose: true})))
     .pipe(gulp.dest('dist'));
 });
 
@@ -53,6 +52,7 @@ gulp.task('fonts', function () {
   return gulp.src(require('main-bower-files')().concat('app/fonts/**/*'))
     .pipe($.filter('**/*.{eot,svg,ttf,woff}'))
     .pipe($.flatten())
+    .pipe(gulp.dest('.tmp/fonts'))
     .pipe(gulp.dest('dist/fonts'));
 });
 
@@ -68,15 +68,13 @@ gulp.task('extras', function () {
 
 gulp.task('clean', require('del').bind(null, ['.tmp', 'dist']));
 
-gulp.task('connect',<% if (includeSass) { %> ['styles'],<% } %> function () {
+gulp.task('connect', ['styles', 'fonts'], function () {
   var serveStatic = require('serve-static');
   var serveIndex = require('serve-index');
   var app = require('connect')()
     .use(require('connect-livereload')({port: 35729}))
-    .use(serveStatic('app'))
     .use(serveStatic('.tmp'))
-    // paths to bower_components should be relative to the current file
-    // e.g. in app/index.html you should use ../bower_components
+    .use(serveStatic('app'))
     .use('/bower_components', serveStatic('bower_components'))
     .use(serveIndex('app'));
 
@@ -87,7 +85,7 @@ gulp.task('connect',<% if (includeSass) { %> ['styles'],<% } %> function () {
     });
 });
 
-gulp.task('serve', ['connect', 'watch'], function () {
+gulp.task('serve', ['watch'], function () {
   require('opn')('http://localhost:9000');
 });
 
@@ -96,11 +94,16 @@ gulp.task('wiredep', function () {
   var wiredep = require('wiredep').stream;
 <% if (includeSass) { %>
   gulp.src('app/styles/*.scss')
-    .pipe(wiredep())
+    .pipe(wiredep({
+      ignorePath: /^(\.\.\/)+/
+    }))
     .pipe(gulp.dest('app/styles'));
 <% } %>
   gulp.src('app/*.html')
-    .pipe(wiredep(<% if (includeSass && includeBootstrap) { %>{exclude: ['bootstrap-sass-official']}<% } %>))
+    .pipe(wiredep({<% if (includeSass && includeBootstrap) { %>
+      exclude: ['bootstrap-sass-official'],<% } %>
+      ignorePath: /^(\.\.\/)*\.\./
+    }))
     .pipe(gulp.dest('app'));
 });
 
@@ -116,7 +119,7 @@ gulp.task('watch', ['connect'], function () {
   ]).on('change', $.livereload.changed);
 
   gulp.watch('app/styles/**/*.<%= includeSass ? 'scss' : 'css' %>', ['styles']);
-  gulp.watch('bower.json', ['wiredep']);
+  gulp.watch('bower.json', ['wiredep', 'fonts']);
 });
 
 gulp.task('build', ['jshint', 'html', 'images', 'fonts', 'extras'], function () {
